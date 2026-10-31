@@ -1,0 +1,62 @@
+name: Build JingPing Lite APK
+on:
+  push:
+    branches:
+      - build/jingping-lite-20261101
+    paths:
+      - '.github/workflows/build-jingping-lite.yml'
+      - 'tools/patch_jingping.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout isolated build branch
+        uses: actions/checkout@v4
+      - name: Checkout pinned upstream source
+        run: |
+          mkdir upstream
+          cd upstream
+          git init -q
+          git remote add origin https://github.com/zfdang/Android-Touch-Helper.git
+          git fetch --depth 1 origin d896dc13954cdeaf7f6a71e6201cc01f9e751b77
+          git checkout --detach -q FETCH_HEAD
+      - name: Apply personalized changes
+        run: python3 tools/patch_jingping.py
+      - name: Configure JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android API 36
+        run: sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Unit tests
+        working-directory: upstream
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+      - name: Build signed debug APK
+        working-directory: upstream
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+      - name: Verify no Internet permission and publish checksum
+        run: |
+          mkdir -p output
+          APK=$(find upstream/app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)
+          test -s "$APK"
+          cp "$APK" output/JingPing-Lite-20261101.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions output/JingPing-Lite-20261101.apk | tee output/permissions.txt
+          if grep -q android.permission.INTERNET output/permissions.txt; then echo 'Internet permission not permitted'; exit 1; fi
+          (cd output && sha256sum JingPing-Lite-20261101.apk > SHA256SUMS.txt)
+          ls -lh output
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JingPing-Lite-Android-APK
+          path: output/
+          if-no-files-found: error
+          retention-days: 30
