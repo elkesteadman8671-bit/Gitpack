@@ -8,7 +8,7 @@ on:
       - 'tools/patch_jingping.py'
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   android-apk:
     runs-on: ubuntu-24.04
@@ -42,15 +42,19 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
-      - name: Build signed debug APK
+      - name: Build optimized release (R8 code/resource shrinking)
         working-directory: upstream
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-      - name: Verify no Internet permission and publish checksum
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+      - name: Align, sign and verify release APK
         run: |
+          set -euo pipefail
           mkdir -p output
-          APK=$(find upstream/app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)
+          APK=$(find upstream/app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
           test -s "$APK"
-          cp "$APK" output/JingPing-Lite-20261101.apk
+          keytool -genkeypair -noprompt -keystore /tmp/jingping-release.jks             -storepass 'temporary-jingping-v1' -keypass 'temporary-jingping-v1'             -alias jingping -keyalg RSA -keysize 3072 -validity 3650             -dname 'CN=JingPing Lite,O=Personal Build,C=CN'
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -f -p 4 "$APK" /tmp/jingping-aligned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign             --ks /tmp/jingping-release.jks --ks-key-alias jingping             --ks-pass pass:temporary-jingping-v1 --key-pass pass:temporary-jingping-v1             --out output/JingPing-Lite-20261101.apk /tmp/jingping-aligned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose output/JingPing-Lite-20261101.apk
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions output/JingPing-Lite-20261101.apk | tee output/permissions.txt
           if grep -q android.permission.INTERNET output/permissions.txt; then echo 'Internet permission not permitted'; exit 1; fi
           (cd output && sha256sum JingPing-Lite-20261101.apk > SHA256SUMS.txt)
@@ -62,3 +66,9 @@ jobs:
           path: output/
           if-no-files-found: error
           retention-days: 30
+      - name: Publish direct APK download on GitHub Releases
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create jingping-lite-20261101             output/JingPing-Lite-20261101.apk output/SHA256SUMS.txt output/permissions.txt             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title '净屏·轻跳 1.0.0 | 轻量化 Android APK'             --notes 'Based on zfdang/Android-Touch-Helper (MIT). Local-only, no Internet permission, R8/resource shrink, personal safety defaults. Signed with a one-off key; future updates require uninstall/reinstall unless the original signing key is preserved.'
